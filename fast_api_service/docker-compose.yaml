@@ -1,0 +1,28 @@
+services:
+  recsys_app:
+    env_file:
+      - .env
+    build: .
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+    hostname: recsys_app
+
+  prometheus:
+    image: prom/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
+    volumes:
+      - "./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"
+    hostname: prometheus
+
+  grafana:
+    image: grafana/grafana
+    env_file:
+      - .env
+    ports:
+      - "${GRAFANA_PORT}:${GRAFANA_PORT}"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS}
