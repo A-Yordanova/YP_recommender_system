@@ -204,7 +204,7 @@ def prepare_personalized_recommendations():
                 user_encoder, 
                 item_encoder, 
                 items, 
-                n=n_pers_recommendations
+                n=n_recommendations
             )
         recommendations.append(user_recommendations)
         

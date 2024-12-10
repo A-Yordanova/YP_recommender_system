@@ -178,7 +178,7 @@ def prepare_similar_items_recommendations():
                 all_similar_items.append(similar_items_df)
             recommendations = pd.concat(all_similar_items, ignore_index=True)
             return recommendations
-        
+
         # Create i2i recommendations for all items
         similar_items = get_i2i_recommendations_for_items(
             items, 
@@ -186,7 +186,8 @@ def prepare_similar_items_recommendations():
             item_encoder,
             n=n_similar_items
         )
-
+        similar_items_path = "/tmp/similar_items.parquet"
+        
         created_recommendations = {
             "similar_items": similar_items_path
         }
