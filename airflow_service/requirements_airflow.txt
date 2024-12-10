@@ -271,3 +271,4 @@ yarl==1.9.3
 zc.lockfile==3.0.post1
 zipp==3.17.0
 implicit
+psycopg2-binary

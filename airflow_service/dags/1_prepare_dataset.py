@@ -1,13 +1,27 @@
 import os
+import logging
+
 import pandas as pd
 import numpy as np
+import psycopg2
 import pendulum
 from dotenv import load_dotenv
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from sqlalchemy import MetaData, Table, Column, String, Integer, BigInteger, Float, Boolean, DateTime, inspect, UniqueConstraint
 from notifications import send_telegram_success_message, send_telegram_failure_message
+from database_functions import extract_tables, get_sqlalchemy_type, create_dynamic_table, insert_dataframe_to_table
 
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+# DAG prepare_datasets parameters
 @dag(
     schedule="0 22 * * *",  # Daily, at 22:00
     start_date=pendulum.datetime(2024, 12, 4, tz="UTC"),
@@ -17,38 +31,66 @@ from notifications import send_telegram_success_message, send_telegram_failure_m
     on_failure_callback=send_telegram_failure_message
 )
 
+# DAG prepare_datasets function
 def prepare_datasets():
+    logger.info(f"Start PREPARE_DATASETS process.")
 
     # EXTRACT
     @task()
     def extract(**kwargs):
-        db_conn = PostgresHook("postgresql_db").get_sqlalchemy_engine()
+        """
+        Establishes a connection to the database and
+        downloads required tables to temporary folder.
 
-        # Load Categories
-        categories = pd.read_sql("SELECT * FROM category_tree", db_conn).reset_index(drop=True)
-        categories_path = "/tmp/categories.parquet"
-        categories.to_parquet(categories_path)
+        Returns:
+            extracted_data: dict of paths to data files.
+        """
+
+        logger.info(f"Start PREPARE_DATASETS.extract subprocess.")
+
+        try:
+            db_conn = PostgresHook("postgresql_db").get_conn()
+            logger.info(f"Database connection has been established.")
+        except Exception as e:
+            logger.error(f"Establishing connection failed: {e}")
+
+        # Load tables
+        files = {
+            "category_tree": "/tmp/categories.csv",
+            "item_properties": "/tmp/item_properties.csv",
+            "events": "/tmp/events.csv"
+        }
         
-        # Load Item Properties
-        item_properties = pd.read_sql("SELECT * FROM item_properties", db_conn, index_col="id")
-        item_properties_path = "/tmp/item_properties.parquet"
-        item_properties.to_parquet(item_properties_path)
+        extracted_data = extract_tables(db_conn, files)
+                
+        if len(extracted_data) < len(files):
+            logger.error("Extracted data is incomplete. Some tables failed to download.")
         
-        # Load Events
-        events = pd.read_sql("SELECT * FROM events", db_conn, index_col="id")
-        events_path = "/tmp/events.parquet"
-        events.to_parquet(events_path)
-
-        extracted_data = {"categories": categories_path, "item_properties": item_properties_path, "events": events_path}
-
+        logger.info(f"Finish PREPARE_DATASETS.extract subprocess.")
         return extracted_data
 
     # TRANSFORM
     @task()
     def transform(extracted_data):
-        categories = pd.read_parquet(extracted_data["categories"])
-        item_properties = pd.read_parquet(extracted_data["item_properties"])
-        events = pd.read_parquet(extracted_data["events"])
+        """
+        Transforms extracted tables, merges 'categories' 
+        and 'item_properties' into 'items' DataFrame.
+
+        Parameters:
+            extracted_data: dict of paths to 'categories',
+            'item_properties' and 'events' files.
+
+        Returns:
+            transformed_data: dict of paths to 'events' 
+            and 'items' files.
+        
+        """
+
+        logger.info(f"Start PREPARE_DATASETS.transform subprocess.")
+        
+        categories = pd.read_csv(extracted_data["category_tree"])
+        item_properties = pd.read_csv(extracted_data["item_properties"])
+        events = pd.read_csv(extracted_data["events"])
 
         # Transform categories df
         categories["parent_category_id"] = categories["parent_category_id"].fillna(-1).astype("int")
@@ -119,58 +161,78 @@ def prepare_datasets():
         events.to_parquet(events_path)
 
         transformed_data = {"items": items_path, "events": events_path}
-        
+
+        logger.info(f"Finish PREPARE_DATASETS.transform subprocess.")
         return transformed_data
 
     # LOAD
     @task()
     def load(transformed_data):
+        """
+        Creates tables in the database and loads prepared
+        'events' and 'items' Dataframes to the tables.
+
+        Parameters:
+            transformed_data: dict of paths to 'events' 
+            and 'items' files.
+
+        Returns:
+            Doesn't return anything.
+        """
+
+        logger.info(f"Start PREPARE_DATASETS.load subprocess.")
+        
         items = pd.read_parquet(transformed_data["items"])
         events = pd.read_parquet(transformed_data["events"])
         
-        type_mapping = {
-            "int64": Integer,
-            "float64": Float,
-            "object": String,
-            "bool": Boolean,
-            "datetime64[ns]": DateTime
-        }
-        def get_sqlalchemy_type(pandas_type):
-            """Get SQLAlchemy type based on pandas column type."""
-            return type_mapping.get(str(pandas_type), String)
-        
-        def create_dynamic_table(df: pd.DataFrame, index_col, table_name: str):
+        try:
             db_conn = PostgresHook("postgresql_db").get_sqlalchemy_engine()
-            metadata = MetaData()
-            columns = []
-            for column in df.columns:
-                column_type = get_sqlalchemy_type(df[column].dtype)
-                columns.append(Column(column, column_type)) 
-            table = Table(table_name, metadata, *columns, UniqueConstraint(index_col, name=f"unique_{table_name}_id_constraint"))
-            if not inspect(db_conn).has_table(table.name):
-                metadata.create_all(db_conn)
+            logger.info(f"Database connection has been established.")
+        except Exception as e:
+            logger.error(f"Establishing connection failed: {e}")
         
         events = events.reset_index(drop=False)
-        create_dynamic_table(df=events, index_col="id", table_name="recsys_events")
-        create_dynamic_table(df=items, index_col="item_id", table_name="recsys_items")
 
-        def insert_dataframe_to_table(df: pd.DataFrame, table_name: str, if_exists: str = "replace"):
-            """Insert a DataFrame into a PostgreSQL table."""
-            db_conn = PostgresHook("postgresql_db").get_sqlalchemy_engine()
-            df.to_sql(
-                name=table_name,
-                con=db_conn,
-                index=False,       # Exclude DataFrame index
-                if_exists=if_exists,  # Options: 'fail', 'replace', 'append'
-                chunksize=10000
+        try:
+            create_dynamic_table(
+                db_connection=db_conn, 
+                df=events, 
+                index_col="id", 
+                table_name="recsys_events"
             )
-            
-        insert_dataframe_to_table(items, "recsys_items")
-        insert_dataframe_to_table(events, "recsys_events")
+            create_dynamic_table(
+                db_connection=db_conn, 
+                df=items, 
+                index_col="item_id", 
+                table_name="recsys_items"
+            )
+            logger.info(f"Tables recsys_items and recsys_events have been created.")
+        except Exception as e:
+            logger.error(f"Tables recsys_items and recsys_events creation failed: {e}")
 
+        try:
+            insert_dataframe_to_table(
+                db_connection=db_conn, 
+                df=items, 
+                table_name="recsys_items", 
+                if_exists="replace"
+            )
+            insert_dataframe_to_table(
+                db_connection=db_conn,
+                df=events,
+                table_name="recsys_events", 
+                if_exists="replace"
+            )
+            logger.info(f"Tables recsys_items and recsys_events have been inserted.")
+        except Exception as e:
+            logger.error(f"Inserting tables recsys_items and recsys_events failed: {e}")
+        
+        logger.info(f"Finish PREPARE_DATASETS.load subprocess.")
+        
     extracted_data = extract()
     transformed_data = transform(extracted_data)
     load(transformed_data)
+    logger.info(f"Finish PREPARE_DATASETS process.")
 
 # Run the DAG
 prepare_datasets()
