@@ -17,68 +17,20 @@ Project consists of three parts:
 
 Raw data used in this project is stored in PostgresSQL database in the following tables: `category_tree`, `item_properties`, `events`.
 
-## Project Setup Guide
-Copy the repository with the project:
-```bash
-git clone https://github.com/A-Yordanova/mle-pr-final.git
-```
-
-Make sure all the commands are executed from the work directory:
-```bash
-cd mle-pr-final
-```
-
-Create and activate new virtual environment:
-```
-python3 -m venv .venv_mle_pr_final
-source .venv_mle_pr_final/bin/activate
-```
-
-Install required Python libraries:
-```bash
-pip install -r requirements.txt
-```
-
 ## 1. Modeling Experiments
 Exploratory data analysis and modeling experiments are in the notebook `research.ipynb`. All experiments and models were logged with MLFlow.
 
 **To launch Jupyter Server:**
 ```bash
 sh dev_scripts/run_jupyter_server.sh
-# Access: http://127.0.0.0:8888
 ```
 
 **To launch MLFlow Server:**
 ```bash
 sh dev_scripts/run_mlflow_server.sh
-# Access: http://127.0.0.0:5000
 ```
 
 ## 2. Pipeline in Airlfow
-**To launch Airflow Server:**
-1. Download `docker-compose.yaml` file from the official site:
-```bash
-curl -LfO https://airflow.apache.org/docs/apache-airflow/2.7.3/docker-compose.yaml
-```
-2. Open the file with any editor, comment out line 53 and remove comment from line 54.
-3. Save aurflow_uid to environmental variables:
-```bash
-echo -e "\nAIRFLOW_UID=$(id -u)" >> .env
-```
-4. Create container with Airflow and launch it:
-```bash
-cd airflow_service
-docker compose up airflow-init
-docker compose down --volumes --remove-orphans
-docker compose up --build
-# Access: http://127.0.0.0:8080/
-```
-5. To stop service:
-```bash
-cd airflow_service
-docker compose down
-```
-
 **Airflow DAG Description**
 |DAG|Description|Schedule|
 |:---|:---|:---|
@@ -93,12 +45,6 @@ docker compose down
 All DAGs have Telegram callback option.
 
 ## 3. Fast API service
-Launch service without containerization:
-```bash
-cd fast_api_service
-uvicorn recsys_app.recsys_app:app --reload --port 8081 --host 0.0.0.0
-```
-
 Launch service in Docker container with monitoring:
 ```bash
 cd fast_api_service
